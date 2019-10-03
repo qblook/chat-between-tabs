@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<script>
+
+// main application configuration object
+var configDb = {
+	_chatWindowId: 'chat-window',
+	_chatTextInputId: 'chat-input',
+	_chatUserInputId: 'chat-user',
+	_enterChatButtonId: 'enter-chat',
+	_clearHistoryButtonId: 'clear-history',
+	_sendMessageButtonId: 'send-message',
+	_usersListDivId: 'users-list',
+	_adapterId: 0,
+	_messageTemplate: '<div class="chat-message"><b>[{Date}] {User}:</b> {Message}</div>',
+	_userTemplate: '<div class="user-item">{User}</div>',
+	_currentAdapter: null,
+	_timer: 500
+}
+
+// chat model object
+var chat = {
+	_user: null,
+	_config: null,
+	// if something happened
+	_warningDivId: 'chat-window',
+	// initialize chat model
+	init: function(p) {
+		console.log('chat initialise with:', p);
+		if (!p.user || p.user.trim().length == 0) {
+			document.getElementById(this._warningDivId).innerHTML = 'Please set user name';
+			return 1;
+		}
+		if (!p.config) {
+			document.getElementById(this._warningDivId).innerHTML = 'Wrong configuration!';
+			return 2;
+		}
+		if (!p.adapter) {
+			document.getElementById(this._warningDivId).innerHTML = 'Wron adapter!';
+			return 3;
+		}
+		this._config = p.config;
+		this._config._currentAdapter = p.adapter;
+		this._config._user = p.user;
+		this._config._currentAdapter.usersListCallback = this.fillUsersList;
+		this._config._currentAdapter.init(p.config);
+		this._config._currentAdapter.receiveMessageCallback = this.receiveMessage;
+		this._config._currentAdapter.clearHistoryCallback = this.clearHistoryWindow;
+		this.fillChatWindowByHistory(this._config._currentAdapter.getHistory());
+		this._user = p.user;
+		return 0;
+	},
+	// send message
+	sendMessage: function(m) {
+		this._config._currentAdapter.sendMessage({user:this._user,text:m});
+		
+	},
+	// receive message from adapter
+	receiveMessage: function(m, configLocal) {
+		var messageText = chat.designMessage(m);
+		document.getElementById(configLocal._chatWindowId).innerHTML += messageText;
+	},
+	// clear chat history (for everyone)
+	clearHistory: function() {
+		this._config._currentAdapter.clearHistory();
+		this.clearHistoryWindow(this._config);
+	},
+	// clear history window in current tab
+	clearHistoryWindow: function(configLocal) {
+		document.getElementById(configLocal._chatWindowId).innerHTML = '';
+	},
+	// fill chat windows by history from database when current user login
+	fillChatWindowByHistory: function(history) {
+		if (!history) return;
+		var html = '';
+		for (var i = 0; i < history.length; i++) {
+			html += this.designMessage(history[i]);
+		}
+		document.getElementById(this._config._chatWindowId).innerHTML = html;
+	},
+	// buil user's message stylized div
+	designMessage: function(m) {
+		return this._config._messageTemplate
+				.replace('{Message}', m.text)
+				.replace('{Date}',  function(d){if (!d) return ''; var o = new Date(d); return o.getDate() + '/' + (o.getMonth()+1) + ' ' + o.getHours() + ':' + o.getMinutes() + ':' + o.getSeconds() }(m.date))
+				.replace('{User}', m.user)
+	},
+	// fill online users list by array from database
+	fillUsersList: function(l, configLocal) {
+		if (!l) return;
+		var list = '';
+		for (var i = 0; i < l.length; i++) {
+			list += configLocal._userTemplate.replace('{User}', l[i]);
+		}
+		document.getElementById(configLocal._usersListDivId).innerHTML = list;
+	}
+}
+
+// array of available adapters for transmitting data before users
+var messagesAdapters = [
+	{
+		name: 'local-storage',
+		title: 'Local storage',
+		desc: 'Working only in local machine. Must be opened by "http://serverName", not as "file:///"!',
+		config: null,
+		// initialize adapter settings
+		init: function(config) {
+		
+			if (!localStorage.history) {
+				localStorage.setItem('history', JSON.stringify([]));
+			}
+			if (!localStorage.users) {
+				localStorage.setItem('users', JSON.stringify([]));
+			}
+			
+			this.config = config;
+			var configLocal = config;
+			
+			var users = JSON.parse(localStorage.users);
+			users.push(config._user);
+			localStorage.setItem('users', JSON.stringify(users));
+			this.usersListCallback(users, configLocal);	
+			
+			// hack: if page has opened as "protocl://host/page.extension" (can work with local-storage events)
+			if (document.location.host) {
+				window.addEventListener('storage', function(e) {
+					switch (e.key) {
+						case 'history':
+							if (e.newValue == null) return;
+							if (e.newValue == '[]') {
+								configLocal._currentAdapter.clearHistoryCallback(configLocal);
+								return;
+							}
+							var message = JSON.parse(e.newValue).slice(-1)[0];
+							// fix for IE
+							if (message.user != configLocal._user) {
+								configLocal._currentAdapter.receiveMessageCallback(message, configLocal);
+							}
+						break;
+						case 'users':
+							var users = JSON.parse(localStorage.users);
+							configLocal._currentAdapter.usersListCallback(users, configLocal);
+						break;
+					}
+				});
+			} 
+			// hack: if page has opened as "file:///Drive/folder/page.extension" (can't work witn local-storage events)
+			else {
+				var messagesCount = JSON.parse(localStorage.getItem('history')).length;
+				var messagesTimer = setInterval(function() {
+					
+					// check history
+					var history = JSON.parse(localStorage.getItem('history'));
+					if (history.length == 0) {
+						configLocal._currentAdapter.clearHistoryCallback(configLocal);
+						messagesCount = 0;
+					} 
+					else if (messagesCount < history.length) {
+						var diff = history.length - messagesCount;
+						messagesCount = history.length;
+						var messages = history.slice(diff * -1);
+						for (var i = 0; i < messages.length; i++) {
+							if (messages[i].user != configLocal._user)
+								configLocal._currentAdapter.receiveMessageCallback(messages[i], configLocal);
+						}
+					}				
+				}, configLocal._timer);
+				
+				var usersTimer = setInterval(function() {
+					var users = JSON.parse(localStorage.getItem('users'));
+					configLocal._currentAdapter.usersListCallback(users, configLocal);
+				}, configLocal._timer);
+			}
+			
+			window.onbeforeunload = function(event) {
+					var users = JSON.parse(localStorage.users);
+					var index = users.indexOf(configLocal._user);
+					if (index > -1) {
+						users.splice(index, 1);
+						localStorage.setItem('users', JSON.stringify(users));
+					}
+				}
+		},
+		// send message via this adapter
+		sendMessage: function(m) {
+			m.date = new Date();
+			var history = JSON.parse(localStorage.history);
+			history.push(m);
+			localStorage.setItem('history', JSON.stringify(history));
+			this.receiveMessageCallback(m, this.config);
+		},
+		// clear database history 
+		clearHistory: function() {
+			localStorage.setItem('history', JSON.stringify([]));
+		},
+		// get database history
+		getHistory: function() {
+			return JSON.parse(localStorage.getItem('history'));
+		},
+		// events callbacks
+		receiveMessageCallback: null,
+		clearHistoryCallback: null,
+		usersListCallback: null
+	}
+]
+
+// user's input controller
+var guiController = {
+	// clicked button Enter Chat
+	enterChat_Click: function() {
+		var i = 0;
+		var user = document.getElementById(configDb._chatUserInputId).value;
+		var initResult = chat.init({adapter: messagesAdapters[i], user: user, config: configDb});
+		if (initResult == 0) {
+			document.getElementById(configDb._chatUserInputId).disabled = true;
+			document.getElementById(configDb._enterChatButtonId).disabled = true;
+			document.getElementById(configDb._chatTextInputId).disabled = false;
+			document.getElementById(configDb._sendMessageButtonId).disabled = false;
+			document.getElementById(configDb._clearHistoryButtonId).disabled = false;
+		}
+	},
+	// clicked button Send Message
+	sendMessage_Click: function() {
+		var m = document.getElementById(configDb._chatTextInputId).value;
+		if (!m || m.trim().length == 0)
+			return;
+		chat.sendMessage(m.trim());
+		document.getElementById(configDb._chatTextInputId).value = '';
+	},
+	// clicked button Clear History
+	clearHistory_Click: function() {
+		chat.clearHistory();
+	},
+	// DEBUG!!! clear all local storage
+	clearAllDatabase_Click: function() {
+		localStorage.clear();
+		document.location.reload();
+	}
+}
+
+		</script>
+		
+		<style>
+			.chat-window {
+				position:absolute;
+				float: left;
+				top: 10px;
+				left: 10px;
+				right: 145px;
+				bottom: 45px;
+				border:1px solid lightgray;
+				overflow-y: auto;
+				font-family:verdana;
+				padding-left: 5px;
+			}
+			.users-list {
+				position: absolute;
+				float: right;
+				top: 10px;
+				width: 130px;
+				right: 10px;
+				bottom: 45px;
+				border: 1px solid lightgray;
+				overflow-y: auto;
+				font-family:verdana;
+			}
+			.user-item {
+				margin-left: 5px;
+				font-size: 11px;
+			}
+			.chat-message {
+				font-family:verdana;
+				font-size:11px;
+			}
+			.chat-user-input {
+				width:100px;
+			}
+			.user-control-panel {
+				position:absolute;
+				float:bottom;
+				bottom: 10px;
+				left:10px;
+				right:10px;
+				border: 1px solid lightgray;
+				padding: 5px 5px 5px 5px;
+			}
+			.debug-button {
+				float: right;
+			}
+		</style>
+		
+	</head>
+	
+	<body>
+		<div id="chat-window" class="chat-window">This is local messaging chat for communicate between web-browser tabs, based on LocalStorage technology. For beginning enter Your name in special field and press "Enter to chat". This version support simple features: <ul><li>one tab - one user</li> <li>messages history</li> <li>users list (only if page opened by http-protocol http://..., not as local file file:///)</li> <li> scalable architecture</li> <li>* Some problems with Internet Explorer</li><br>
+		<br>
+		<br>
+		Have a nice day! :)</div>
+		
+		<div id="users-list" class="users-list"></div>
+		<div class="user-control-panel">
+			<input id="chat-user" name="chat-user" class="chat-user-input" type="text" placeholder="User name" onkeydown="if (event.keyCode == 13) guiController.enterChat_Click()">
+			<input id="chat-input" name="chat-input" class="chat-text-input" type="text" disabled placeholder="Message" onkeydown="if (event.keyCode == 13) guiController.sendMessage_Click()">
+			<button onclick="guiController.sendMessage_Click()" disabled id="send-message">Send</button>
+			<button onclick="guiController.clearHistory_Click()" disabled id="clear-history">Clear history</button>
+			<button onclick="guiController.enterChat_Click()" id="enter-chat">Enter to chat</button>
+			<button onclick="guiController.clearAllDatabase_Click()" class="debug-button">DEBUG: Drop all database</button>
+		</div>
+	</body>
+</html>
+
